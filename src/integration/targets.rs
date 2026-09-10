@@ -20,9 +20,9 @@ use super::config_edit::{
     remove_hook_commands, remove_kimi_config_block, remove_simple_command_hook,
 };
 use super::env::{
-    antigravity_cli_dir, claude_dir, codex_dir, copilot_dir, cursor_dir, devin_dir, droid_dir,
-    grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, mastracode_dir, omp_extension_dir,
-    opencode_dir, opencode_state_dir, pi_extension_dir, qodercli_dir, qwen_dir,
+    antigravity_cli_dir, claude_dir, codely_dir, codex_dir, copilot_dir, cursor_dir, devin_dir,
+    droid_dir, grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, mastracode_dir,
+    omp_extension_dir, opencode_dir, opencode_state_dir, pi_extension_dir, qodercli_dir, qwen_dir,
 };
 use super::file_ops::{
     make_executable, remove_dir_all_if_exists, remove_file_if_exists, remove_legacy_bash_hook_file,
@@ -33,25 +33,27 @@ use super::opencode_config::{
 };
 use super::types::{
     AntigravityCliInstallPaths, AntigravityCliUninstallResult, ClaudeInstallPaths,
-    ClaudeUninstallResult, CodexInstallPaths, CodexUninstallResult, CopilotInstallPaths,
-    CopilotUninstallResult, CursorInstallPaths, CursorUninstallResult, DevinInstallPaths,
-    DevinUninstallResult, DroidInstallPaths, DroidUninstallResult, GrokInstallPaths,
-    GrokUninstallResult, HermesInstallPaths, HermesUninstallResult, KiloInstallPaths,
-    KiloUninstallResult, KimiInstallPaths, KimiUninstallResult, MastracodeInstallPaths,
-    MastracodeUninstallResult, OmpInstallPaths, OmpUninstallResult, OpenCodeInstallPaths,
-    OpenCodeUninstallResult, PiUninstallResult, QodercliInstallPaths, QodercliUninstallResult,
-    QwenInstallPaths, QwenUninstallResult,
+    ClaudeUninstallResult, CodelyInstallPaths, CodelyUninstallResult, CodexInstallPaths,
+    CodexUninstallResult, CopilotInstallPaths, CopilotUninstallResult, CursorInstallPaths,
+    CursorUninstallResult, DevinInstallPaths, DevinUninstallResult, DroidInstallPaths,
+    DroidUninstallResult, GrokInstallPaths, GrokUninstallResult, HermesInstallPaths,
+    HermesUninstallResult, KiloInstallPaths, KiloUninstallResult, KimiInstallPaths,
+    KimiUninstallResult, MastracodeInstallPaths, MastracodeUninstallResult, OmpInstallPaths,
+    OmpUninstallResult, OpenCodeInstallPaths, OpenCodeUninstallResult, PiUninstallResult,
+    QodercliInstallPaths, QodercliUninstallResult, QwenInstallPaths, QwenUninstallResult,
 };
 use super::{
     ANTIGRAVITY_CLI_HOOK_ASSET, ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
     ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_ASSET,
-    CLAUDE_HOOK_INSTALL_NAME, CODEX_HOOK_ASSET, CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_ASSET,
-    COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME, COPILOT_REMOVED_LIFECYCLE_HOOK_EVENTS,
-    CURSOR_HOOK_ASSET, CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_ASSET, DEVIN_HOOK_EVENTS,
-    DEVIN_HOOK_INSTALL_NAME, DEVIN_REMOVED_LIFECYCLE_HOOK_EVENTS, DROID_HOOK_ASSET,
-    DROID_HOOK_EVENTS, DROID_HOOK_INSTALL_NAME, DROID_REMOVED_LIFECYCLE_HOOK_EVENTS,
-    GROK_HOOK_ASSET, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    HERMES_PLUGIN_INIT_ASSET, HERMES_PLUGIN_INIT_INSTALL_NAME, HERMES_PLUGIN_MANIFEST_ASSET,
+    CLAUDE_HOOK_INSTALL_NAME, CODELY_HOOK_ASSET, CODELY_HOOK_INSTALL_NAME, CODELY_HOOK_TIMEOUT_MS,
+    CODELY_MANAGED_EVENTS, CODELY_SETTINGS_HOOK_NAME, CODEX_HOOK_ASSET, CODEX_HOOK_INSTALL_NAME,
+    COPILOT_HOOK_ASSET, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
+    COPILOT_REMOVED_LIFECYCLE_HOOK_EVENTS, CURSOR_HOOK_ASSET, CURSOR_HOOK_INSTALL_NAME,
+    DEVIN_HOOK_ASSET, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME,
+    DEVIN_REMOVED_LIFECYCLE_HOOK_EVENTS, DROID_HOOK_ASSET, DROID_HOOK_EVENTS,
+    DROID_HOOK_INSTALL_NAME, DROID_REMOVED_LIFECYCLE_HOOK_EVENTS, GROK_HOOK_ASSET,
+    GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME, HERMES_PLUGIN_INIT_ASSET,
+    HERMES_PLUGIN_INIT_INSTALL_NAME, HERMES_PLUGIN_MANIFEST_ASSET,
     HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_ASSET, KILO_PLUGIN_INSTALL_NAME,
     KIMI_HOOK_ASSET, KIMI_HOOK_INSTALL_NAME, MASTRACODE_HOOK_ASSET, MASTRACODE_HOOK_EVENTS,
     MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS, MASTRACODE_REMOVED_HOOK_EVENTS,
@@ -1506,4 +1508,182 @@ pub(crate) fn uninstall_grok() -> io::Result<GrokUninstallResult> {
         removed_hook_file,
         removed_config_file,
     })
+}
+
+/// The exact Herdr-owned Codely hook definition. Installation and status share
+/// this value so any registration drift is reported as outdated. Codely runs
+/// hook commands through a shell with millisecond timeouts, and `name` is how
+/// its `/hooks` UI and herdr identify the entry.
+fn codely_hook_command(hook_path: &Path) -> String {
+    format!("node \"{}\"", hook_path.display())
+}
+
+fn codely_hook_definition(hook_path: &Path) -> Value {
+    json!({
+        "type": "command",
+        "name": CODELY_SETTINGS_HOOK_NAME,
+        "command": codely_hook_command(hook_path),
+        "timeout": CODELY_HOOK_TIMEOUT_MS,
+    })
+}
+
+fn is_owned_codely_hook(hook: &Value) -> bool {
+    hook.get("type").and_then(Value::as_str) == Some("command")
+        && (hook.get("name").and_then(Value::as_str) == Some(CODELY_SETTINGS_HOOK_NAME)
+            || hook
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|command| command.contains(CODELY_HOOK_INSTALL_NAME)))
+}
+
+fn is_owned_codely_entry(entry: &Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .is_some_and(|hooks| hooks.iter().any(is_owned_codely_hook))
+}
+
+fn read_codely_settings(settings_path: &Path) -> io::Result<Value> {
+    if !settings_path.is_file() {
+        return Ok(json!({}));
+    }
+    let content = fs::read_to_string(settings_path)?;
+    let trimmed = content.trim();
+    let value: Value = if trimmed.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(trimmed).map_err(|err| {
+            io::Error::other(format!(
+                "failed to parse {}: {err}",
+                settings_path.display()
+            ))
+        })?
+    };
+    if !value.is_object() {
+        return Err(io::Error::other(format!(
+            "{} must contain a JSON object",
+            settings_path.display()
+        )));
+    }
+    Ok(value)
+}
+
+pub(crate) fn install_codely() -> io::Result<CodelyInstallPaths> {
+    let dir = codely_dir()?;
+    if !dir.is_dir() {
+        return Err(io::Error::other(format!(
+            "codely config directory not found at {}. install codely first",
+            dir.display()
+        )));
+    }
+
+    let hooks_dir = dir.join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    let hook_path = hooks_dir.join(CODELY_HOOK_INSTALL_NAME);
+    fs::write(&hook_path, CODELY_HOOK_ASSET)?;
+
+    let settings_path = dir.join("settings.json");
+    let mut settings = read_codely_settings(&settings_path)?;
+    {
+        // Codely keeps its hook system off by default; the managed events
+        // only run while `hooks.enabled` is true.
+        let hooks = ensure_hooks_object(
+            &mut settings,
+            &settings_path,
+            "codely settings file",
+            "codely settings hooks",
+        )?;
+        hooks.insert("enabled".to_string(), Value::Bool(true));
+        for event in CODELY_MANAGED_EVENTS {
+            let entries = hooks
+                .entry(event.to_string())
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| {
+                    io::Error::other(format!("hook entries for {event} must be an array"))
+                })?;
+            entries.retain(|entry| !is_owned_codely_entry(entry));
+            entries.push(json!({ "hooks": [codely_hook_definition(&hook_path)] }));
+        }
+    }
+    fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+
+    Ok(CodelyInstallPaths {
+        hook_path,
+        settings_path,
+    })
+}
+
+pub(crate) fn uninstall_codely() -> io::Result<CodelyUninstallResult> {
+    let dir = codely_dir()?;
+    let hook_path = dir.join("hooks").join(CODELY_HOOK_INSTALL_NAME);
+    let settings_path = dir.join("settings.json");
+
+    let mut updated_settings = false;
+    if settings_path.is_file() {
+        let mut settings = read_codely_settings(&settings_path)?;
+        if let Some(hooks) = hooks_object_if_present(
+            &mut settings,
+            &settings_path,
+            "codely settings file",
+            "codely settings hooks",
+        )? {
+            for event in CODELY_MANAGED_EVENTS {
+                let Some(entries) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                let before = entries.len();
+                entries.retain(|entry| !is_owned_codely_entry(entry));
+                if entries.len() != before {
+                    updated_settings = true;
+                }
+                if entries.is_empty() {
+                    hooks.remove(event);
+                }
+            }
+        }
+        if updated_settings {
+            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        }
+    }
+
+    // `hooks.enabled` is left untouched: the user may have their own codely
+    // hooks that still need the hook system turned on.
+    let removed_hook_file = remove_file_if_exists(&hook_path)?;
+
+    Ok(CodelyUninstallResult {
+        hook_path,
+        settings_path,
+        removed_hook_file,
+        updated_settings,
+    })
+}
+
+/// Whether the Herdr-owned Codely registration in settings.json exactly covers
+/// every managed event. The hook only runs while `hooks.enabled` is true and
+/// its event entries exist, so a current hook script with a missing or broken
+/// registration is a nonfunctional install: report it as outdated so
+/// `herdr integration status` flags it and a reinstall rewrites both files.
+pub(crate) fn codely_settings_registration_is_valid(hook_path: &Path) -> bool {
+    let Some(config_dir) = hook_path.parent().and_then(Path::parent) else {
+        return false;
+    };
+    let settings_path = config_dir.join("settings.json");
+    let Ok(content) = fs::read_to_string(&settings_path) else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_str::<Value>(&content) else {
+        return false;
+    };
+    let Some(hooks) = settings.get("hooks").and_then(Value::as_object) else {
+        return false;
+    };
+    hooks.get("enabled").and_then(Value::as_bool) == Some(true)
+        && CODELY_MANAGED_EVENTS.iter().all(|event| {
+            hooks
+                .get(*event)
+                .and_then(Value::as_array)
+                .is_some_and(|entries| entries.iter().any(is_owned_codely_entry))
+        })
 }

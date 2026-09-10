@@ -297,6 +297,23 @@ const GROK_HOOK_ASSET: &str = if cfg!(windows) {
     include_str!("assets/grok/herdr-agent-state.sh")
 };
 const GROK_INTEGRATION_VERSION: u32 = 1;
+// Codely hooks run `node <script>` (Codely's own runtime), so one portable
+// .js asset serves every platform; there is no sh/ps1 pair. SessionEnd is not
+// managed: Herdr ignores release reports from official sources and clears the
+// authority itself on process exit.
+const CODELY_HOOK_INSTALL_NAME: &str = "herdr-agent-state.js";
+const CODELY_HOOK_ASSET: &str = include_str!("assets/codely/herdr-agent-state.js");
+const CODELY_SETTINGS_HOOK_NAME: &str = "herdr-agent-state";
+const CODELY_HOOK_TIMEOUT_MS: u64 = 10_000;
+const CODELY_MANAGED_EVENTS: [&str; 6] = [
+    "SessionStart",
+    "BeforeAgent",
+    "BeforeTool",
+    "Notification",
+    "PermissionRequest",
+    "AfterAgent",
+];
+const CODELY_INTEGRATION_VERSION: u32 = 1;
 
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 

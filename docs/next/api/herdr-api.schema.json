@@ -2174,7 +2174,8 @@
             "cursor",
             "mastracode",
             "antigravity_cli",
-            "grok"
+            "grok",
+            "codely"
           ],
           "type": "string"
         },
@@ -7708,7 +7709,8 @@
             "cursor",
             "mastracode",
             "antigravity_cli",
-            "grok"
+            "grok",
+            "codely"
           ],
           "type": "string"
         },
