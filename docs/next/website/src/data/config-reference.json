@@ -1411,6 +1411,17 @@
             "on",
             "off"
           ]
+        },
+        {
+          "key": "ui.sound.agents.codely",
+          "type": "enum",
+          "default": "\"default\"",
+          "description": "Sound override for detected Codely agents.",
+          "values": [
+            "default",
+            "on",
+            "off"
+          ]
         }
       ]
     },

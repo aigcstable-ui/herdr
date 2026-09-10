@@ -25,6 +25,7 @@ pub(crate) fn integration_target_label(
         crate::api::schema::IntegrationTarget::Mastracode => "mastracode",
         crate::api::schema::IntegrationTarget::AntigravityCli => "antigravity-cli",
         crate::api::schema::IntegrationTarget::Grok => "grok",
+        crate::api::schema::IntegrationTarget::Codely => "codely",
     }
 }
 
@@ -55,6 +56,7 @@ pub(crate) fn integration_target_command_names(
         crate::api::schema::IntegrationTarget::Mastracode => &["mastracode"],
         crate::api::schema::IntegrationTarget::AntigravityCli => &["agy"],
         crate::api::schema::IntegrationTarget::Grok => &["grok"],
+        crate::api::schema::IntegrationTarget::Codely => &["codely"],
     }
 }
 
@@ -84,6 +86,7 @@ pub(crate) fn integration_target_supported(target: crate::api::schema::Integrati
                 | crate::api::schema::IntegrationTarget::Cursor
                 | crate::api::schema::IntegrationTarget::Mastracode
                 | crate::api::schema::IntegrationTarget::Grok
+                | crate::api::schema::IntegrationTarget::Codely
         )
     }
 
@@ -121,6 +124,12 @@ pub(crate) fn integration_target_install_layout_available(
     match target {
         crate::api::schema::IntegrationTarget::Codex => codex_standalone_binary_available(),
         crate::api::schema::IntegrationTarget::Hermes => hermes_install_layout_available(),
+        // The codely binary may be absent from the server's PATH while the
+        // agent itself is installed; a populated config directory is enough
+        // for hook integration.
+        crate::api::schema::IntegrationTarget::Codely => {
+            codely_dir().map(|dir| dir.is_dir()).unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -267,7 +276,7 @@ fn integration_specs() -> [(
     crate::api::schema::IntegrationTarget,
     io::Result<PathBuf>,
     u32,
-); 17] {
+); 18] {
     [
         (
             crate::api::schema::IntegrationTarget::Pi,
@@ -359,6 +368,11 @@ fn integration_specs() -> [(
             crate::api::schema::IntegrationTarget::Grok,
             grok_dir().map(|dir| dir.join("hooks").join(super::GROK_HOOK_INSTALL_NAME)),
             super::GROK_INTEGRATION_VERSION,
+        ),
+        (
+            crate::api::schema::IntegrationTarget::Codely,
+            codely_dir().map(|dir| dir.join("hooks").join(super::CODELY_HOOK_INSTALL_NAME)),
+            super::CODELY_INTEGRATION_VERSION,
         ),
     ]
 }
@@ -475,6 +489,14 @@ pub(crate) fn integration_status_at(
     if target == crate::api::schema::IntegrationTarget::Grok
         && state == super::IntegrationStatusKind::Current
         && !grok_hook_config_is_valid(&path)
+    {
+        state = super::IntegrationStatusKind::Outdated;
+    }
+    // Codely only runs the hook while settings.json keeps `hooks.enabled` and
+    // every managed event registered, so the same drift rule applies.
+    if target == crate::api::schema::IntegrationTarget::Codely
+        && state == super::IntegrationStatusKind::Current
+        && !super::targets::codely_settings_registration_is_valid(&path)
     {
         state = super::IntegrationStatusKind::Outdated;
     }

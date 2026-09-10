@@ -64,7 +64,16 @@ STAGED_PUBLISHED_MANIFESTS = {
     ),
 }
 
-UNPUBLISHED_BUNDLED_MANIFESTS: dict[str, tuple[str, str]] = {}
+UNPUBLISHED_BUNDLED_MANIFESTS: dict[str, tuple[str, str]] = {
+    # Codely is newly bundled; current stable clients cannot identify the
+    # codely process, so the manifest stays unpublished until the first
+    # stable release that ships codely process detection. Remove this
+    # exception when publishing the manifest to the catalog.
+    "codely": (
+        "2026.09.10.1",
+        "45713498aa93168897f99b2785a5574e34d1eee6c611aca7337ecbb733aa8219",
+    ),
+}
 
 
 def parse_args() -> argparse.Namespace:

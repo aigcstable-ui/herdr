@@ -245,6 +245,13 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
                 ]
             }
         }
+        ("herdr:codely", "codely", AgentSessionRefKind::Id) => {
+            vec![
+                "codely".into(),
+                "--resume-session".into(),
+                session_ref.value.clone(),
+            ]
+        }
         _ => return None,
     };
 
@@ -283,6 +290,7 @@ pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
             | ("herdr:antigravity_cli", "agy")
             | ("herdr:grok", "grok")
             | ("herdr:letta", "letta")
+            | ("herdr:codely", "codely")
     )
 }
 
@@ -563,6 +571,16 @@ mod tests {
             &AgentSessionRef::id("default:").unwrap()
         )
         .is_none());
+        assert_eq!(
+            plan(
+                "herdr:codely",
+                "codely",
+                &AgentSessionRef::id("codely-session").unwrap()
+            )
+            .unwrap()
+            .argv,
+            vec!["codely", "--resume-session", "codely-session"]
+        );
     }
 
     #[test]
