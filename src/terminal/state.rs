@@ -740,7 +740,14 @@ impl TerminalState {
                 }
             }
         }
-        self.persisted_agent_session = None;
+        // A plain state report carries no session_ref of its own. Keep the
+        // persisted session that anchored this source; wiping it here made the
+        // first applied report destroy the anchor, so every later report looked
+        // unanchored and was dropped. Only clear it when the report replaces
+        // the session identity outright.
+        if session_ref.is_some() {
+            self.persisted_agent_session = None;
+        }
         self.hook_authority = Some(HookAuthority {
             source,
             agent_label,
@@ -2324,6 +2331,39 @@ mod tests {
             AgentState::Working,
             None,
             Some(11),
+        );
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    // The first applied state report must not destroy the persisted session
+    // that anchors this source; otherwise every later report (working, blocked,
+    // idle) looks unanchored and is dropped.
+    #[test]
+    fn full_lifecycle_state_reports_keep_the_anchor_alive() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_agent_process_at(Agent::Codely, Instant::now());
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:codely".into(),
+            "codely".into(),
+            Some(crate::agent_resume::AgentSessionRef::id("s1").unwrap()),
+            Some(1),
+            Some("startup".into()),
+        );
+        // The startup idle report applies…
+        terminal.set_hook_authority(
+            "herdr:codely".into(),
+            "codely".into(),
+            AgentState::Idle,
+            None,
+            Some(2),
+        );
+        // …and the following working report must still be anchored.
+        terminal.set_hook_authority(
+            "herdr:codely".into(),
+            "codely".into(),
+            AgentState::Working,
+            None,
+            Some(3),
         );
         assert_eq!(terminal.state, AgentState::Working);
     }
