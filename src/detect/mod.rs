@@ -622,8 +622,11 @@ fn agent_name_from_path_token(token: &str) -> Option<String> {
         return None;
     }
 
-    agent_name_from_basename(path_basename(trimmed))
-        .or_else(|| agent_name_from_known_package_path(trimmed))
+    // Package-scoped rules must win over the script basename: Codely's node
+    // bundle is literally named gemini.js, and a basename-first lookup would
+    // classify it as Gemini.
+    agent_name_from_known_package_path(trimmed)
+        .or_else(|| agent_name_from_basename(path_basename(trimmed)))
         .or_else(|| resolved_agent_name_from_path_token(trimmed))
 }
 
@@ -680,6 +683,11 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         }
         if window == ["node_modules", "@letta-ai", "letta-code", "letta"] {
             return Some(agent_label(Agent::Letta).to_string());
+        }
+    }
+    for window in components.windows(3) {
+        if window == ["node_modules", "@codely", "cli"] {
+            return Some(agent_label(Agent::Codely).to_string());
         }
     }
     None
@@ -1141,6 +1149,24 @@ mod tests {
                 Some((Agent::Qwen, "qwen".to_string()))
             );
         }
+    }
+
+    #[test]
+    fn identify_agent_in_job_detects_node_wrapped_codely_bundle_named_gemini_js() {
+        let argv = vec![
+            "node.exe",
+            r"C:\Users\user\AppData\Roaming\npm\node_modules\@codely\cli\bundle\gemini.js",
+            "-y",
+        ];
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 123,
+            processes: vec![foreground_process(123, "MainThread", &argv)],
+        };
+
+        assert_eq!(
+            identify_agent_in_job(&job),
+            Some((Agent::Codely, "codely".to_string()))
+        );
     }
 
     #[test]
