@@ -147,27 +147,18 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationCommandTarget>> {
     let Some(target) = args.first().map(|arg| arg.as_str()) else {
         eprintln!(
-<<<<<<< HEAD
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
-=======
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok|codely>"
->>>>>>> ababa657 (feat: add codely agent integration)
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok|codely>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-<<<<<<< HEAD
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
-=======
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok|codely>"
->>>>>>> ababa657 (feat: add codely agent integration)
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok|codely>"
         );
         return Ok(None);
     }
 
     let parsed = match target {
-<<<<<<< HEAD
         "pi" => IntegrationCommandTarget::Builtin(IntegrationTarget::Pi),
         "omp" => IntegrationCommandTarget::Builtin(IntegrationTarget::Omp),
         "claude" => IntegrationCommandTarget::Builtin(IntegrationTarget::Claude),
