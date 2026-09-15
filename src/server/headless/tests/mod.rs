@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "pane_graphics.rs"]
 mod pane_graphics_tests;
+#[path = "pane_move.rs"]
+mod pane_move_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
@@ -11,6 +13,16 @@ fn client_shell_snapshot(message: ServerMessage) -> Box<crate::protocol::ClientS
     };
     assert_eq!(kind, crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
     Box::new(serde_json::from_str(&data).expect("decode client shell snapshot"))
+}
+
+fn client_agent_view_projection(
+    message: ServerMessage,
+) -> crate::protocol::endpoint::EndpointAgentViewProjection {
+    let ServerMessage::EndpointControl { kind, data } = message else {
+        panic!("expected client agent view projection");
+    };
+    assert_eq!(kind, crate::protocol::endpoint::AGENT_VIEW_PROJECTION_KIND);
+    serde_json::from_str(&data).expect("decode client agent view projection")
 }
 
 fn test_headless_server() -> HeadlessServer {
@@ -576,6 +588,83 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[tokio::test]
+async fn promoted_client_window_title_uses_its_own_view() {
+    let mut server = test_headless_server();
+    let mut survivor = crate::workspace::Workspace::test_new("survivor");
+    let survivor_tab_index = survivor.test_add_tab(Some("survivor-tab"));
+    let survivor_pane = survivor.tabs[survivor_tab_index].layout.focused();
+    let disconnected = crate::workspace::Workspace::test_new("disconnected");
+    let disconnected_pane = disconnected.tabs[0].layout.focused();
+    server.app.state.workspaces = vec![survivor, disconnected];
+    server.app.state.active = Some(1);
+    server.app.state.selected = 1;
+    server.app.state.ensure_test_terminals();
+    let survivor_terminal = server.app.state.workspaces[0].tabs[survivor_tab_index]
+        .terminal_id(survivor_pane)
+        .expect("survivor terminal")
+        .clone();
+    let terminal = server
+        .app
+        .state
+        .terminals
+        .get_mut(&survivor_terminal)
+        .expect("survivor terminal state");
+    terminal.manual_label = Some("client-pane".into());
+    terminal.set_terminal_title(Some("CLIENT OSC".into()));
+    server
+        .app
+        .configure_window_title("{workspace}/{tab}/{pane}/{terminal_title}");
+
+    let (survivor_control, _) = connect_matching_test_shell(&mut server, 1);
+    let (disconnected_control, _) = connect_matching_test_shell(&mut server, 2);
+    let survivor_tab_id = server
+        .app
+        .public_tab_id(0, survivor_tab_index)
+        .expect("survivor tab id");
+    assert!(server.focus_shell_client_on_tab(1, &survivor_tab_id));
+    server.promote_client_to_foreground(2);
+    drain_window_titles(&survivor_control);
+    drain_window_titles(&disconnected_control);
+
+    assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 2 }));
+    server.sync_window_title();
+
+    assert_eq!(
+        next_window_title(&survivor_control),
+        Some(Some("survivor/survivor-tab/client-pane/CLIENT OSC".into()))
+    );
+    assert_eq!(server.app.state.active, Some(1));
+    assert_eq!(
+        server.shell_tab_id_for_client(1).as_deref(),
+        Some(survivor_tab_id.as_str())
+    );
+
+    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    runtime.test_process_pty_bytes(b"\x1b]0;UPDATED OSC\x07");
+    server
+        .app
+        .terminal_runtimes
+        .insert(survivor_terminal, runtime);
+    assert!(
+        server
+            .sync_terminal_title_sources(&HashSet::from([survivor_pane]))
+            .1
+    );
+    assert_eq!(
+        next_window_title(&survivor_control),
+        Some(Some("survivor/survivor-tab/client-pane/UPDATED OSC".into()))
+    );
+    assert!(
+        !server
+            .sync_terminal_title_sources(&HashSet::from([disconnected_pane]))
+            .1
+    );
+    assert!(no_window_title(&survivor_control));
+
+    shutdown_test_runtimes(&mut server);
+}
+
 fn test_client_writer() -> (
     ClientWriter,
     std::sync::mpsc::Receiver<Vec<u8>>,
@@ -600,6 +689,7 @@ async fn client_shell_attach_seeds_workspace() {
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 6,
             surface_cols: 80,
             surface_rows: 23,
@@ -630,6 +720,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let client_id = 41;
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -737,6 +828,95 @@ fn terminal_client_endpoint_request_error_removes_client() {
 }
 
 #[tokio::test]
+async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots() {
+    use crate::api::schema::{
+        AgentViewBuiltinField, AgentViewField, AgentViewFilter, AgentViewSetParams, AgentViewValue,
+    };
+
+    let mut server = test_headless_server();
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
+            client_id: 77,
+            surface_cols: 80,
+            surface_rows: 23,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            direct_graphics: false,
+            endpoint_keybindings: false,
+            mouse_capture: false,
+            surface_active: false,
+            writer,
+        })
+    );
+    let initial = client_shell_snapshot(read_server_message(
+        control_rx.recv().expect("initial snapshot"),
+    ));
+
+    let mut view = AgentViewSetParams {
+        source: "example.views".into(),
+        label: Some("focus".into()),
+        filter: Some(AgentViewFilter::Eq {
+            field: AgentViewField::Builtin(AgentViewBuiltinField::Status),
+            value: AgentViewValue::String("working".into()),
+        }),
+        sort: Vec::new(),
+    };
+    server.app.state.agent_view_override = Some(view.clone());
+    server.render_and_stream();
+    let set = client_agent_view_projection(read_server_message(
+        control_rx.recv().expect("set projection"),
+    ));
+    let set_snapshot = client_shell_snapshot(read_server_message(
+        control_rx.recv().expect("set snapshot"),
+    ));
+    assert!(set.revision > initial.revision);
+    assert_eq!(set.revision, set_snapshot.revision);
+    assert_eq!(
+        set.view.map(serde_json::from_value).transpose().unwrap(),
+        Some(view.clone())
+    );
+
+    view.filter = Some(AgentViewFilter::Eq {
+        field: AgentViewField::Builtin(AgentViewBuiltinField::Status),
+        value: AgentViewValue::String("blocked".into()),
+    });
+    server.app.state.agent_view_override = Some(view.clone());
+    server.render_and_stream();
+    let replacement = client_agent_view_projection(read_server_message(
+        control_rx.recv().expect("replacement projection"),
+    ));
+    let replacement_snapshot = client_shell_snapshot(read_server_message(
+        control_rx.recv().expect("replacement snapshot"),
+    ));
+    assert!(replacement.revision > set.revision);
+    assert_eq!(replacement.revision, replacement_snapshot.revision);
+    assert_eq!(
+        replacement
+            .view
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap(),
+        Some(view)
+    );
+
+    server.app.state.agent_view_override = None;
+    server.render_and_stream();
+    let cleared = client_agent_view_projection(read_server_message(
+        control_rx.recv().expect("clear projection"),
+    ));
+    let cleared_snapshot = client_shell_snapshot(read_server_message(
+        control_rx.recv().expect("clear snapshot"),
+    ));
+    assert!(cleared.revision > replacement.revision);
+    assert_eq!(cleared.revision, cleared_snapshot.revision);
+    assert!(cleared.view.is_none());
+    assert!(cleared_snapshot.agent_view_label.is_none());
+}
+
+#[tokio::test]
 async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("shell-only-label");
@@ -766,6 +946,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 7,
             surface_cols: 80,
             surface_rows: 23,
@@ -933,6 +1114,7 @@ fn connect_test_shell(
     let (writer, control, render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id,
             surface_cols,
             surface_rows,
@@ -1057,6 +1239,25 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
 }
 
 #[tokio::test]
+async fn first_shell_surface_resizes_a_pane_that_entered_alternate_screen() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let (_control, render) = connect_test_shell(&mut server, 7, 80, 23);
+    let initial_size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
+
+    write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
+    server.render_and_stream();
+
+    let surface = recv_pane_surface(&render, "first alternate-screen surface");
+    assert!(surface.panes[0].alternate_screen_active);
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        (initial_size.0, initial_size.1 + 1)
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_collection() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
@@ -1067,6 +1268,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     server.render_and_stream();
     let large_initial = recv_pane_surface(&large_render, "large initial surface");
     let small_initial = recv_pane_surface(&small_render, "small initial surface");
+    let initial_size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
     assert_eq!(
         (large_initial.frame.width, large_initial.frame.height),
         (80, 23)
@@ -1135,6 +1337,10 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     assert!(large_alt.panes[0].alternate_screen_active);
     assert!(small_alt.panes[0].alternate_screen_active);
     assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        (initial_size.0, initial_size.1 + 1)
+    );
+    assert_eq!(
         large_alt.panes[0].inner_rect.width,
         large_initial.panes[0].inner_rect.width + 1
     );
@@ -1150,6 +1356,10 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     let small_main = recv_pane_surface(&small_render, "small restored main-screen surface");
     assert!(!large_main.panes[0].alternate_screen_active);
     assert!(!small_main.panes[0].alternate_screen_active);
+    assert_eq!(
+        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        initial_size
+    );
     assert_eq!(
         large_main.panes[0].inner_rect,
         large_initial.panes[0].inner_rect
@@ -1366,6 +1576,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     let (local_writer, local_control, _local_render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 13,
             surface_cols: 80,
             surface_rows: 23,
@@ -1390,6 +1601,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     let (endpoint_writer, endpoint_control, _endpoint_render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 14,
             surface_cols: 80,
             surface_rows: 23,
@@ -2292,6 +2504,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 9,
             surface_cols: 80,
             surface_rows: 23,
@@ -2542,6 +2755,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
+            surface_reuse: false,
             client_id: 12,
             surface_cols: 80,
             surface_rows: 23,
@@ -3479,6 +3693,53 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
     drop(server);
     drop(_runtime_guard);
     rt.shutdown_timeout(Duration::from_millis(100));
+}
+
+#[cfg(unix)]
+#[test]
+fn backpressured_observer_skips_runtime_access_and_recovers_without_new_output() {
+    with_terminal_session_test_server(|server, terminal_id, target, _| {
+        let (writer, control, frames) = test_client_writer();
+        server.handle_server_event(ServerEvent::ClientConnected {
+            client_id: 7,
+            cols: 80,
+            rows: 24,
+            cell_width_px: 0,
+            cell_height_px: 0,
+            pixel_mouse: false,
+            writer,
+        });
+        server.handle_server_event(ServerEvent::ClientObserveTerminal {
+            client_id: 7,
+            target,
+        });
+        server.render_and_stream();
+        server.app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"LATEST"),
+        );
+        server.render_and_stream();
+        assert_eq!(server.clients[&7].deferred_render(), DeferredRender::Full);
+
+        // An absent runtime makes any attempted rendering observable without timing a lock.
+        let runtime = server.app.terminal_runtimes.remove(&terminal_id).unwrap();
+        server.render_and_stream();
+        server.app.terminal_runtimes.insert(terminal_id, runtime);
+        assert!(
+            server.clients.contains_key(&7),
+            "backpressure must skip runtime access"
+        );
+        assert!(control.try_recv().is_err());
+
+        let _ = frames.recv().expect("previously accepted frame");
+        assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 7 }));
+        server.render_and_stream();
+        let ServerMessage::Terminal(frame) = read_server_message(frames.recv().unwrap()) else {
+            panic!("terminal update");
+        };
+        assert!(String::from_utf8_lossy(&frame.bytes).contains("LATEST"));
+        assert_eq!(server.clients[&7].deferred_render(), DeferredRender::None);
+    });
 }
 
 #[test]

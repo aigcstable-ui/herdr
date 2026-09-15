@@ -3,6 +3,7 @@ use super::*;
 pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
+const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
 
 fn pane_surface_row<'a>(
     surface: &'a PaneSurfaceFrame,
@@ -371,8 +372,7 @@ pub(super) enum ClientRenameTarget {
 #[derive(Debug)]
 pub(super) struct ClientRenameOverlay {
     pub(super) title: &'static str,
-    pub(super) input: String,
-    pub(super) replace_on_type: bool,
+    pub(super) input: TextEditor,
     pub(super) target: ClientRenameTarget,
 }
 
@@ -416,7 +416,7 @@ pub(super) struct ClientNavigatorRow {
 
 #[derive(Debug)]
 pub(super) struct ClientNavigatorOverlay {
-    pub(super) query: String,
+    pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
@@ -426,7 +426,7 @@ pub(super) struct ClientNavigatorOverlay {
 
 #[derive(Debug)]
 pub(super) struct ClientHelpOverlay {
-    pub(super) query: String,
+    pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) scroll: usize,
 }
@@ -481,9 +481,8 @@ pub(super) struct ClientSettingsOverlay {
 pub(super) struct ClientWorktreeCreateOverlay {
     pub(super) source_workspace_id: String,
     pub(super) repo_name: String,
-    pub(super) branch: String,
+    pub(super) branch: TextEditor,
     pub(super) checkout_path: String,
-    pub(super) replace_on_type: bool,
     pub(super) error: Option<String>,
     pub(super) creating: bool,
 }
@@ -531,7 +530,7 @@ pub(super) struct ClientWorktreeOpenOverlay {
     pub(super) source_workspace_id: String,
     pub(super) entries: Vec<ClientWorktreeOpenEntry>,
     pub(super) selected: usize,
-    pub(super) query: String,
+    pub(super) query: TextEditor,
     pub(super) search_focused: bool,
     pub(super) error: Option<String>,
     pub(super) opening: bool,
@@ -698,6 +697,9 @@ pub(super) enum PendingEndpointKind {
         absolute_row: u32,
         generation: u64,
     },
+    PaneLinkResolve {
+        target: super::link_hover::LinkHoverTarget,
+    },
     PaneLinkActivate {
         pane_id: String,
         inner_rect: Rect,
@@ -846,7 +848,7 @@ pub(super) enum ClientCopySelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopySearchPrompt {
     pub(super) direction: crate::api::schema::PaneCopySearchDirection,
-    pub(super) query: String,
+    pub(super) query: TextEditor,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -891,6 +893,8 @@ pub(super) struct ClientCopyModeState {
 pub(crate) struct ClientShellState {
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    pub(super) active_snapshot_generation: Option<u64>,
+    pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
     /// A future projection surface waits here until its matching snapshot arrives. The visible
     /// pane surface always remains an exact snapshot pair.
@@ -933,6 +937,7 @@ pub(crate) struct ClientShellState {
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
+    pub(super) link_hover: Option<super::link_hover::LinkHover>,
     pub(super) url_click_consumes_until_up: bool,
     pub(super) replaying_url_click: bool,
     pub(super) selection: Option<crate::selection::Selection<String>>,
@@ -974,6 +979,7 @@ pub(crate) struct ClientShellState {
     pub(super) local_config_diagnostic: Option<String>,
     pub(super) config_diagnostic: Option<String>,
     pub(super) endpoint_error: Option<String>,
+    pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
 }
 
@@ -1048,6 +1054,8 @@ impl ClientShellState {
         Self {
             config,
             snapshot: None,
+            active_snapshot_generation: None,
+            pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
             graphics: crate::kitty_graphics::surface::ClientState::default(),
@@ -1091,6 +1099,7 @@ impl ClientShellState {
             overlay,
             previous_pane_id: None,
             pane_mouse_gesture: None,
+            link_hover: None,
             url_click_consumes_until_up: false,
             replaying_url_click: false,
             selection: None,
@@ -1132,6 +1141,7 @@ impl ClientShellState {
             config_diagnostic: local_config_diagnostic.clone(),
             local_config_diagnostic,
             endpoint_error: None,
+            endpoint_error_deadline: None,
             dismissed_product_announcement: None,
         }
     }
@@ -1273,6 +1283,7 @@ impl ClientShellState {
         self.endpoint_notice_seen.clear();
         self.visible_endpoint_notice = None;
         self.endpoint_error = None;
+        self.endpoint_error_deadline = None;
         self.navigate_workspace_id = None;
         self.overlay = self
             .config
@@ -1280,6 +1291,7 @@ impl ClientShellState {
             .then_some(ClientShellOverlay::Onboarding);
         self.previous_pane_id = None;
         self.pane_mouse_gesture = None;
+        self.link_hover = None;
         self.url_click_consumes_until_up = false;
         self.replaying_url_click = false;
         self.selection = None;
@@ -1299,7 +1311,11 @@ impl ClientShellState {
         self.dismissed_product_announcement = None;
     }
 
-    pub(super) fn apply_active_snapshot(&mut self, mut snapshot: Box<ClientShellSnapshot>) {
+    pub(super) fn apply_active_snapshot(
+        &mut self,
+        mut snapshot: Box<ClientShellSnapshot>,
+        generation: Option<u64>,
+    ) {
         snapshot
             .commands
             .retain(|command| command.action != crate::protocol::ClientShellCommandAction::Unknown);
@@ -1310,13 +1326,21 @@ impl ClientShellState {
         };
         let endpoint_boot_changed =
             self.snapshot.is_some() && self.graphics.scope() != graphics_scope;
+        let generation_changed = self.active_snapshot_generation != generation;
         if !endpoint_boot_changed
+            && !generation_changed
             && self.snapshot.as_ref().is_some_and(|current| {
                 current.boot_id == snapshot.boot_id && snapshot.revision < current.revision
             })
         {
             return;
         }
+        // Screen revisions restart per connection. Keep the displayed surface for selection
+        // content comparisons, but retire speculative frames from the old connection.
+        if generation_changed {
+            self.pending_pane_surface = None;
+        }
+        self.active_snapshot_generation = generation;
         self.graphics.set_scope(&graphics_scope);
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()
@@ -1389,7 +1413,7 @@ impl ClientShellState {
                 snapshot.server_keybindings_toml.as_deref(),
                 &snapshot.commands,
             ) {
-                self.endpoint_error = Some(err);
+                self.set_endpoint_error(err);
             } else if active_keymap_changed
                 && matches!(
                     self.mode,
@@ -1608,7 +1632,8 @@ impl ClientShellState {
             return;
         }
         if self.pane_surface.as_ref().is_some_and(|current| {
-            current.boot_id == surface.boot_id
+            self.pane_surface_generation == self.active_snapshot_generation
+                && current.boot_id == surface.boot_id
                 && (surface.projection_revision < current.projection_revision
                     || (surface.projection_revision == current.projection_revision
                         && surface.surface_revision < current.surface_revision))
@@ -1636,7 +1661,8 @@ impl ClientShellState {
             || surface.projection_revision < snapshot.revision
             || (!retain_future && surface.projection_revision != snapshot.revision)
             || self.pane_surface.as_ref().is_some_and(|current| {
-                current.boot_id == surface.boot_id
+                self.pane_surface_generation == self.active_snapshot_generation
+                    && current.boot_id == surface.boot_id
                     && (surface.projection_revision < current.projection_revision
                         || (surface.projection_revision == current.projection_revision
                             && surface.surface_revision < current.surface_revision))
@@ -1693,6 +1719,7 @@ impl ClientShellState {
             }
             self.hits.popup = None;
             self.endpoint_error = None;
+            self.endpoint_error_deadline = None;
         }
         if next_popup.is_some() {
             self.popup_pending = false;
@@ -1806,6 +1833,8 @@ impl ClientShellState {
         self.graphics
             .set_scene(std::mem::take(&mut surface.graphics));
         self.pane_surface = Some(surface);
+        self.pane_surface_generation = self.active_snapshot_generation;
+        self.invalidate_link_hover();
         self.resume_mobile_switcher_if_ready();
         self.reconcile_input_source();
     }
@@ -1850,6 +1879,33 @@ impl ClientShellState {
             repaint = true;
         }
         repaint
+    }
+
+    /// Show a transient client-side action error, restarting its lifetime.
+    ///
+    /// Every assignment must go through this setter so a repeated identical
+    /// message gets a fresh deadline instead of inheriting the previous one.
+    pub(super) fn set_endpoint_error(&mut self, message: impl Into<String>) {
+        self.endpoint_error = Some(message.into());
+        self.endpoint_error_deadline = Some(
+            std::time::Instant::now() + std::time::Duration::from_secs(ENDPOINT_ERROR_TIMEOUT_SECS),
+        );
+    }
+
+    pub(crate) fn tick_endpoint_error(&mut self, now: std::time::Instant) -> bool {
+        if self.endpoint_error.is_none() {
+            self.endpoint_error_deadline = None;
+            return false;
+        }
+        if self
+            .endpoint_error_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.endpoint_error = None;
+            self.endpoint_error_deadline = None;
+            return true;
+        }
+        false
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {

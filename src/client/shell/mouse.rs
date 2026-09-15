@@ -123,8 +123,7 @@ impl ClientShellState {
             Ok(_) => {
                 self.pane_scroll_queued.remove(&pane_id);
                 self.pane_scroll_targets.remove(&pane_id);
-                self.endpoint_error =
-                    Some("endpoint returned an unexpected pane-scroll result".to_owned());
+                self.set_endpoint_error("endpoint returned an unexpected pane-scroll result");
                 true
             }
             Err(_) => {
@@ -653,6 +652,7 @@ impl ClientShellState {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -1679,7 +1679,6 @@ impl ClientShellState {
             } else if super::contains(self.hits.overlay_clear, point) {
                 if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
                     rename.input.clear();
-                    rename.replace_on_type = false;
                     outcome.repaint = true;
                 }
             } else {
