@@ -17,6 +17,7 @@ __pycache__/
 !/docs/versions/**
 /.local/
 /backlog
+/.codely-cli/
 
 /.pi/todos
 /.pi/issues

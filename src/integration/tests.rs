@@ -4625,3 +4625,209 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
 }
+
+fn codely_owned_entries<'a>(hooks: &'a Value, event: &str) -> Vec<&'a Value> {
+    hooks[event]
+        .as_array()
+        .expect("codely event entries")
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("hooks")
+                .and_then(Value::as_array)
+                .is_some_and(|hook_entries| {
+                    hook_entries.iter().any(|hook| {
+                        hook.get("name").and_then(Value::as_str) == Some(CODELY_SETTINGS_HOOK_NAME)
+                    })
+                })
+        })
+        .collect()
+}
+
+#[test]
+fn install_codely_writes_hook_and_settings() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let codely_dir = base.join(".codely-cli");
+    fs::create_dir_all(&codely_dir).unwrap();
+    std::env::set_var(CODELY_CONFIG_DIR_ENV_VAR, &codely_dir);
+
+    let installed = install_codely().unwrap();
+
+    let hooks_dir = codely_dir.join("hooks");
+    assert_eq!(
+        installed.hook_path,
+        hooks_dir.join(CODELY_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(
+        fs::read_to_string(&installed.hook_path).unwrap(),
+        CODELY_HOOK_ASSET
+    );
+
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    assert_eq!(settings["hooks"]["enabled"], json!(true));
+    for event in CODELY_MANAGED_EVENTS {
+        let entries = codely_owned_entries(&settings["hooks"], event);
+        assert_eq!(entries.len(), 1, "event {event}");
+    }
+    let hook = settings["hooks"]["SessionStart"][0]["hooks"][0].clone();
+    assert_eq!(hook["type"], json!("command"));
+    assert_eq!(hook["name"], json!(CODELY_SETTINGS_HOOK_NAME));
+    assert_eq!(
+        hook["command"],
+        json!(format!("node \"{}\"", installed.hook_path.display()))
+    );
+    assert_eq!(hook["timeout"], json!(CODELY_HOOK_TIMEOUT_MS));
+
+    std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn install_codely_is_idempotent_and_preserves_user_hooks() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let codely_dir = base.join(".codely-cli");
+    fs::create_dir_all(&codely_dir).unwrap();
+    std::env::set_var(CODELY_CONFIG_DIR_ENV_VAR, &codely_dir);
+    fs::write(
+        codely_dir.join("settings.json"),
+        serde_json::to_string_pretty(&json!({
+            "hooks": {
+                "enabled": false,
+                "SessionStart": [{
+                    "hooks": [{
+                        "type": "command",
+                        "name": "user-session-log",
+                        "command": "node user-log.js",
+                        "timeout": 5000,
+                    }]
+                }]
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    install_codely().unwrap();
+    install_codely().unwrap();
+
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(codely_dir.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["hooks"]["enabled"], json!(true));
+    let session_start = settings["hooks"]["SessionStart"].as_array().unwrap();
+    // One Herdr entry plus the preserved user entry, with no duplicates
+    // from the repeated install.
+    assert_eq!(session_start.len(), 2);
+    let user_entry = session_start
+        .iter()
+        .find(|entry| entry["hooks"][0]["name"].as_str() == Some("user-session-log"))
+        .expect("user hook entry survives");
+    assert_eq!(user_entry["hooks"][0]["command"], json!("node user-log.js"));
+    for event in CODELY_MANAGED_EVENTS {
+        assert_eq!(
+            codely_owned_entries(&settings["hooks"], event).len(),
+            1,
+            "event {event}"
+        );
+    }
+
+    std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn install_codely_errors_when_config_dir_missing() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    // Deliberately do not create the ~/.codely-cli directory ahead of time:
+    // the config directory must exist so install never seeds partial config.
+    let missing = base.join(".codely-cli");
+    std::env::set_var(CODELY_CONFIG_DIR_ENV_VAR, &missing);
+
+    let err = install_codely().unwrap_err().to_string();
+    assert!(
+        err.contains("codely config directory not found"),
+        "unexpected error: {err}"
+    );
+
+    std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn uninstall_codely_removes_hook_and_entries_leaves_enabled() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let codely_dir = base.join(".codely-cli");
+    fs::create_dir_all(&codely_dir).unwrap();
+    std::env::set_var(CODELY_CONFIG_DIR_ENV_VAR, &codely_dir);
+
+    let installed = install_codely().unwrap();
+    let result = uninstall_codely().unwrap();
+    assert!(result.removed_hook_file);
+    assert!(!installed.hook_path.is_file());
+    assert!(result.updated_settings);
+
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    // `hooks.enabled` stays on: the user may run their own codely hooks.
+    assert_eq!(settings["hooks"]["enabled"], json!(true));
+    for event in CODELY_MANAGED_EVENTS {
+        assert!(
+            settings["hooks"].get(event).is_none(),
+            "event {event} should be removed"
+        );
+    }
+
+    let again = uninstall_codely().unwrap();
+    assert!(!again.removed_hook_file);
+    assert!(!again.updated_settings);
+
+    std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn codely_integration_status_tracks_settings_registration_drift() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let codely_dir = base.join(".codely-cli");
+    fs::create_dir_all(&codely_dir).unwrap();
+    std::env::set_var(CODELY_CONFIG_DIR_ENV_VAR, &codely_dir);
+
+    let installed = install_codely().unwrap();
+    let codely_state = || {
+        installed_integration_statuses()
+            .into_iter()
+            .find(|status| status.target == crate::api::schema::IntegrationTarget::Codely)
+            .expect("codely integration status")
+            .state
+    };
+    assert_eq!(codely_state(), IntegrationStatusKind::Current);
+
+    // Drop one managed event from settings.json: the hook never runs for it,
+    // so the install is no longer current.
+    let mut settings: Value =
+        serde_json::from_str(&fs::read_to_string(&installed.settings_path).unwrap()).unwrap();
+    settings["hooks"]
+        .as_object_mut()
+        .unwrap()
+        .remove("BeforeTool");
+    fs::write(
+        &installed.settings_path,
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(codely_state(), IntegrationStatusKind::Outdated);
+
+    // Restoring the registration makes the install current again without
+    // rewriting the hook script.
+    install_codely().unwrap();
+    assert_eq!(codely_state(), IntegrationStatusKind::Current);
+
+    std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}

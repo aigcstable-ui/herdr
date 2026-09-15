@@ -474,6 +474,29 @@ fn muse_manifest_requires_complete_live_controls() {
 }
 
 #[test]
+fn codely_manifest_matches_captured_working_chrome_and_falls_back_to_idle() {
+    let working = explain(
+        Agent::Codely,
+        "✓  Shell\n   Command: cargo test\n\n⊷  3 tools · 1 running · 2 done\n\nYOLO mode (Ctrl+Y to toggle)\n────────────────\n>   Type your message or @path/to/file\n────────────────\nF:\\Git\\herdr (master*) | GLM-5.3-FLASH (Max · chat) 115.8K / 1.0M | 2 errors",
+    );
+    assert_eq!(working.state, AgentState::Working);
+    assert!(working.visible_working);
+
+    // Per-tool running lines and thinking headers persist as history; they
+    // must not keep a finished turn in working.
+    let idle = explain(
+        Agent::Codely,
+        "✦ Thinking:\n\nSample reasoning text\n\n⊷  Shell: cargo test\n\n✓  Shell\n   Command: cargo test\n\n[Done] Worked for 33s\n\n────────────────\n>   Type your message or @path/to/file\n────────────────\nF:\\Git\\herdr (master*) | GLM-5.3-FLASH (Max · chat) 23.0K / 1.0M",
+    );
+    assert_eq!(idle.state, AgentState::Idle);
+    assert!(!idle.visible_working);
+    assert_eq!(
+        idle.fallback_reason.as_deref(),
+        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+    );
+}
+
+#[test]
 fn manifest_validation_rejects_unknown_fields_empty_rules_invalid_regions_and_regexes() {
     assert!(parse_manifest(
         r#"

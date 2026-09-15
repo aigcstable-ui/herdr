@@ -65,6 +65,7 @@ pub enum Agent {
     Letta,
     Maki,
     Muse,
+    Codely,
 }
 
 impl Agent {
@@ -93,6 +94,7 @@ impl Agent {
         Self::Letta,
         Self::Maki,
         Self::Muse,
+        Self::Codely,
     ];
 
     pub const SCREEN_MANIFEST_AGENTS: [Self; 22] = [
@@ -118,6 +120,7 @@ impl Agent {
         Self::Letta,
         Self::Maki,
         Self::Muse,
+        Self::Codely,
     ];
 }
 
@@ -147,6 +150,7 @@ pub fn agent_label(agent: Agent) -> &'static str {
         Agent::Letta => "letta",
         Agent::Maki => "maki",
         Agent::Muse => "muse",
+        Agent::Codely => "codely",
     }
 }
 
@@ -182,6 +186,7 @@ pub fn interactive_agent_executable(agent: Agent) -> &'static str {
         Agent::Letta => "letta",
         Agent::Maki => "maki",
         Agent::Muse => "muse",
+        Agent::Codely => "codely",
     }
 }
 
@@ -222,6 +227,7 @@ fn lookup_agent(name: &str) -> Option<Agent> {
         "letta" | "letta-code" | "letta code" => Some(Agent::Letta),
         "maki" => Some(Agent::Maki),
         "muse" | "muse-code" | "muse-cli" => Some(Agent::Muse),
+        "codely" | "codely-cli" | "codely code" => Some(Agent::Codely),
         _ if is_muse_versioned_binary(name) => Some(Agent::Muse),
         _ => None,
     }
@@ -333,6 +339,7 @@ pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> 
             | ("herdr:opencode", "opencode")
             | ("herdr:kilo", "kilo")
             | ("herdr:kimi", "kimi")
+            | ("herdr:codely", "codely")
     )
 }
 
@@ -954,6 +961,9 @@ mod tests {
             identify_agent(r"C:\Users\user\muse-bin-0.2.1-R1215.1.exe"),
             Some(Agent::Muse)
         );
+        assert_eq!(identify_agent("codely"), Some(Agent::Codely));
+        assert_eq!(identify_agent("codely-cli"), Some(Agent::Codely));
+        assert_eq!(identify_agent("codely.exe"), Some(Agent::Codely));
     }
 
     #[test]
@@ -982,6 +992,7 @@ mod tests {
         assert_eq!(parse_agent_label("letta-code"), Some(Agent::Letta));
         assert_eq!(parse_agent_label("maki"), Some(Agent::Maki));
         assert_eq!(parse_agent_label("kilo-code"), Some(Agent::Kilo));
+        assert_eq!(parse_agent_label("codely-cli"), Some(Agent::Codely));
     }
 
     #[test]
@@ -1027,6 +1038,7 @@ mod tests {
             (Agent::Letta, "letta"),
             (Agent::Maki, "maki"),
             (Agent::Muse, "muse"),
+            (Agent::Codely, "codely"),
         ];
         assert_eq!(expected.len(), Agent::ALL.len());
         for (agent, executable) in expected {
@@ -1049,6 +1061,12 @@ mod tests {
             "mastracode"
         ));
         assert!(!Agent::SCREEN_MANIFEST_AGENTS.contains(&Agent::Mastracode));
+    }
+
+    #[test]
+    fn codely_is_hybrid_hook_authority_with_screen_manifest() {
+        assert!(full_lifecycle_hook_authority("herdr:codely", "codely"));
+        assert!(Agent::SCREEN_MANIFEST_AGENTS.contains(&Agent::Codely));
     }
 
     #[test]

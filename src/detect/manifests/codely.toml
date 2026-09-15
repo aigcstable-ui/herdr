@@ -1,0 +1,29 @@
+id = "codely"
+version = "2026.09.10.1"
+min_engine_version = 1
+updated_at = "2026-09-10T00:00:00Z"
+aliases = ["codely-cli"]
+
+# Evidence: Codely CLI (Tuanjie AI) live pane reads, Windows, 2026-09-10.
+# The TUI is Gemini CLI-derived: the `> Type your message` input box and the
+# `<cwd> (branch) | model | counters` footer stay visible while a turn is
+# running, so neither is idle evidence. There is no idle rule; unmatched
+# screens fall back to the known-agent idle fallback, mirroring the gemini
+# manifest.
+#
+# `⊷ N tools · M running · K done` (⊷ = U+22B7) is the per-turn tool status
+# summary above the input box that only exists while a turn is active; it is
+# gone once the turn finishes. Per-tool `⊷ <tool>:` lines and `✦ Thinking:`
+# headers persist as transcript history, so they are deliberately NOT
+# working evidence.
+#
+# Blocked rules are pending live captures of Codely permission dialogs;
+# until then blocked comes from the codely lifecycle hook when installed.
+
+[[rules]]
+id = "tools_summary_working"
+state = "working"
+priority = 100
+region = "bottom_non_empty_lines(12)"
+visible_working = true
+line_regex = ['^\s*\x{22B7}\s+[0-9]+ tools?\b']

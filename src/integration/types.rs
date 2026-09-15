@@ -117,11 +117,25 @@ pub(crate) struct GrokInstallPaths {
 }
 
 #[derive(Debug)]
+pub(crate) struct CodelyInstallPaths {
+    pub hook_path: PathBuf,
+    pub settings_path: PathBuf,
+}
+
+#[derive(Debug)]
 pub(crate) struct GrokUninstallResult {
     pub hook_path: PathBuf,
     pub config_path: PathBuf,
     pub removed_hook_file: bool,
     pub removed_config_file: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct CodelyUninstallResult {
+    pub hook_path: PathBuf,
+    pub settings_path: PathBuf,
+    pub removed_hook_file: bool,
+    pub updated_settings: bool,
 }
 
 #[derive(Debug)]
