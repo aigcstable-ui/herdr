@@ -2265,6 +2265,9 @@ mod tests {
         let stale_scan = before_report - Duration::from_millis(50);
         terminal.set_detected_agent_process_at(Agent::Codely, stale_scan);
         assert!(terminal.persisted_agent_session_matches("herdr:codely", "codely"));
+        // The next scan cycle observes with a fresh timestamp and confirms the
+        // process (detected_agent was not set by the suppressed scan).
+        terminal.set_detected_agent_process_at(Agent::Codely, Instant::now());
         terminal.set_hook_authority(
             "herdr:codely".into(),
             "codely".into(),
