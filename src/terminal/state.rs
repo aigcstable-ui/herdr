@@ -206,6 +206,16 @@ impl TerminalState {
         if starts_acquisition {
             self.agent_process_acquisition_pending = true;
         }
+        // A full-lifecycle SessionStart report that landed before the process was
+        // confirmed parks its session in the suppression stash. The delegated
+        // call above can skip the stash promotion: its release-suppression early
+        // return fires when the detection scan predates the report, and later
+        // detections are gated by the previous == detected transition check, so
+        // the stash would stay orphaned and every subsequent state report would
+        // be ignored. Force the promotion once the process is confirmed; the
+        // forced-None previous also covers same-agent relaunch (exit → start),
+        // where detected_agent never changed across the replacement.
+        self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, Some(agent));
         mutation
     }
 
@@ -2231,6 +2241,88 @@ mod tests {
             agent: agent_label.into(),
             session_ref,
         });
+    }
+
+    // A full-lifecycle SessionStart report that arrives while the process is not
+    // yet confirmed must be promoted once the process is detected, even when the
+    // detection scan predates the report (the release-suppression early return)
+    // or when no detection transition occurs afterwards.
+    #[test]
+    fn full_lifecycle_session_start_stash_is_promoted_on_process_detect() {
+        let mut terminal = test_terminal();
+        let before_report = Instant::now();
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:codely".into(),
+            "codely".into(),
+            Some(crate::agent_resume::AgentSessionRef::id("codely-session").unwrap()),
+            Some(1),
+            Some("startup".into()),
+        );
+        assert!(!terminal.persisted_agent_session_matches("herdr:codely", "codely"));
+        // Detection scan whose observation predates the report processing: the
+        // delegated state update early-returns, so the promotion must come from
+        // the process-detection path itself.
+        let stale_scan = before_report - Duration::from_millis(50);
+        terminal.set_detected_agent_process_at(Agent::Codely, stale_scan);
+        assert!(terminal.persisted_agent_session_matches("herdr:codely", "codely"));
+        terminal.set_hook_authority(
+            "herdr:codely".into(),
+            "codely".into(),
+            AgentState::Working,
+            None,
+            Some(2),
+        );
+        assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    // Same-agent relaunch (process exit → new process): the replacement
+    // SessionStart is stashed because the recent exit blocks process_present,
+    // and detected_agent never changes across the relaunch. The next process
+    // detection must still promote the replacement session.
+    #[test]
+    fn full_lifecycle_relaunch_reanchors_pending_session_start() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_agent_process_at(Agent::Codely, Instant::now());
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:codely".into(),
+            "codely".into(),
+            Some(crate::agent_resume::AgentSessionRef::id("s1").unwrap()),
+            Some(1),
+            Some("startup".into()),
+        );
+        assert!(terminal.persisted_agent_session_matches("herdr:codely", "codely"));
+        let _ = terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codely),
+            AgentState::Unknown,
+            false,
+            false,
+            false,
+            true,
+            Instant::now(),
+        );
+        terminal.set_agent_session_ref_for_session_start(
+            "herdr:codely".into(),
+            "codely".into(),
+            Some(crate::agent_resume::AgentSessionRef::id("s2").unwrap()),
+            Some(10),
+            Some("startup".into()),
+        );
+        terminal.set_detected_agent_process_at(Agent::Codely, Instant::now());
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.clone()),
+            Some("s2".to_string())
+        );
+        terminal.set_hook_authority(
+            "herdr:codely".into(),
+            "codely".into(),
+            AgentState::Working,
+            None,
+            Some(11),
+        );
+        assert_eq!(terminal.state, AgentState::Working);
     }
 
     #[test]
