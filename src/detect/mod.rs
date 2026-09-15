@@ -1160,7 +1160,7 @@ mod tests {
         ];
         let job = crate::platform::ForegroundJob {
             process_group_id: 123,
-            processes: vec![foreground_process(123, "MainThread", &argv)],
+            processes: vec![foreground_process(123, "node.exe", &argv)],
         };
 
         assert_eq!(
