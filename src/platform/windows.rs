@@ -350,11 +350,11 @@ use windows_sys::{
             },
             Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT},
             Threading::{
-                GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenThread,
-                QueryFullProcessImageNameW, ResumeThread, TerminateProcess, CREATE_NO_WINDOW,
-                CREATE_SUSPENDED, DETACHED_PROCESS, PROCESS_BASIC_INFORMATION,
-                PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
-                THREAD_SUSPEND_RESUME,
+                GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, IsWow64Process2,
+                OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
+                TerminateProcess, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS,
+                PROCESS_BASIC_INFORMATION, PROCESS_QUERY_INFORMATION,
+                PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ, THREAD_SUSPEND_RESUME,
             },
         },
         UI::{
@@ -385,6 +385,29 @@ const FOREGROUND_SELECTION_RECHECK: Duration = Duration::from_secs(5);
 const FOREGROUND_SELECTION_CACHE_CAPACITY: usize = 1_024;
 const FOREGROUND_SELECTION_CACHE_RETENTION: Duration = Duration::from_secs(60);
 const PANE_RUNTIME_MARKER_ENV_VAR: &str = "HERDR_PANE_RUNTIME_ID";
+
+/// Native processor architecture of the Windows host as an
+/// `IMAGE_FILE_MACHINE_*` value. `IsWow64Process2` reports the native machine
+/// even when an x64 Herdr runs under emulation on Windows ARM64, which the
+/// build target alone cannot reveal.
+pub(crate) fn native_machine_type() -> u16 {
+    let mut process_machine = 0u16;
+    let mut native_machine = 0u16;
+    // SAFETY: `GetCurrentProcess` returns a pseudo-handle and both out-pointers
+    // are valid for the duration of the call.
+    let ok = unsafe {
+        IsWow64Process2(
+            GetCurrentProcess(),
+            &mut process_machine,
+            &mut native_machine,
+        )
+    };
+    if ok != 0 && native_machine != 0 {
+        native_machine
+    } else {
+        process_machine
+    }
+}
 
 pub(crate) fn terminal_title_for_presentation(title: &str) -> &str {
     title.strip_prefix("Administrator: ").unwrap_or(title)
@@ -1356,7 +1379,8 @@ pub fn current_process_is_detached_server_daemon() -> bool {
         return false;
     }
 
-    matches!(current_process_is_in_job(), Ok(false))
+    // Job membership alone does not tie the daemon lifetime to its launcher.
+    matches!(current_job_kills_processes_on_close(), Ok(false))
 }
 
 pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
@@ -3235,6 +3259,67 @@ mod tests {
     const WMI_DAEMON_TEST_CHILD_ENV: &str = "HERDR_TEST_WMI_DAEMON_CHILD";
 
     #[test]
+    fn windows_daemon_readiness_checks_job_limits_and_console() {
+        const CHILD_ENV: &str = "HERDR_TEST_DAEMON_READINESS_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            use super::*;
+
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            assert!(!job.is_null(), "create test job");
+            let job = unsafe { OwnedHandle::from_raw_handle(job) };
+            assert_ne!(
+                unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) },
+                0,
+                "assign child to test job"
+            );
+            assert!(current_process_is_in_job().unwrap());
+            assert!(
+                current_process_is_detached_server_daemon(),
+                "a console-free process in a non-killing job must be ready"
+            );
+
+            for (flags, ready) in [(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, false), (0, true)] {
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                limits.BasicLimitInformation.LimitFlags = flags;
+                assert_ne!(
+                    unsafe {
+                        SetInformationJobObject(
+                            job.as_raw_handle(),
+                            JobObjectExtendedLimitInformation,
+                            std::ptr::from_ref(&limits).cast(),
+                            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                        )
+                    },
+                    0,
+                    "set test job limits"
+                );
+                assert_eq!(current_process_is_detached_server_daemon(), ready);
+            }
+            assert_ne!(unsafe { AllocConsole() }, 0, "allocate test console");
+            assert!(!current_process_is_detached_server_daemon());
+            assert_ne!(unsafe { FreeConsole() }, 0, "release test console");
+            return;
+        }
+
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "platform::windows::tests::windows_daemon_readiness_checks_job_limits_and_console",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1");
+        super::detach_server_daemon_command(&mut child);
+        let output = child.output().expect("run daemon readiness child");
+        assert!(
+            output.status.success(),
+            "daemon readiness child failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn windows_environment_keys_use_unicode_case_insensitive_ordering() {
         assert_eq!(
             super::windows_environment_key_cmp("hérdr", "HÉRDR"),
@@ -3252,7 +3337,7 @@ mod tests {
                     "{}\n{}\n{}",
                     cwd.display(),
                     unsafe { GetConsoleWindow() }.is_null(),
-                    !super::current_job_kills_processes_on_close().expect("inspect WMI daemon job")
+                    super::current_process_is_detached_server_daemon()
                 ),
             )
             .expect("write WMI daemon test capture");

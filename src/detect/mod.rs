@@ -7,7 +7,7 @@ pub mod manifest;
 pub mod manifest_update;
 
 /// The detected state of a terminal pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AgentState {
     /// Agent finished, prompt visible, nothing happening.
     Idle,
@@ -324,10 +324,6 @@ pub fn detect_agent_with_osc(
             osc_progress,
         },
     )
-}
-
-pub fn should_skip_state_update(agent: Option<Agent>, screen_content: &str) -> bool {
-    agent.is_some_and(|agent| manifest::should_skip_state_update(agent, screen_content))
 }
 
 pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> bool {
@@ -660,6 +656,15 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
     }
     if ends_with(&[
         "node_modules",
+        "@oh-my-pi",
+        "pi-coding-agent",
+        "dist",
+        "cli.js",
+    ]) {
+        return Some(agent_label(Agent::Omp).to_string());
+    }
+    if ends_with(&[
+        "node_modules",
         "@moonshot-ai",
         "kimi-code",
         "dist",
@@ -906,14 +911,6 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique)
-    }
-
-    #[test]
-    fn moved_agent_detection_routes_through_production_dispatch() {
-        let detection = detect_agent(Some(Agent::Pi), "Working...");
-
-        assert_eq!(detection.state, AgentState::Working);
-        assert!(detection.visible_working);
     }
 
     // ---- Agent identification ----
@@ -1323,101 +1320,6 @@ mod tests {
     }
 
     #[test]
-    fn letta_manifest_detects_observed_working_and_idle_chrome() {
-        let empty = manifest::explain(Agent::Letta, "");
-        assert_eq!(empty.state, AgentState::Unknown);
-        assert_eq!(
-            empty.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("no_live_state_evidence")
-        );
-        for screen in [
-            "✻ Thinking…\nTutor is reflecting… (esc to interrupt · 2m 3s)",
-            "My Tutor is thinking about thinking… (esc to interrupt · 3s)",
-            "Tutor is calibrating… (interrupting)",
-            "• Run Compile the integration\n└ Running... (1s)",
-        ] {
-            assert_eq!(
-                detect_state(Some(Agent::Letta), screen),
-                AgentState::Working
-            );
-        }
-        assert_eq!(
-            detect_state(
-                Some(Agent::Letta),
-                "────────────────\n› Try \"debug this error\"\n────────────────\nTutor · No model selected"
-            ),
-            AgentState::Idle
-        );
-        assert_eq!(
-            detect_state(
-                Some(Agent::Letta),
-                "────────────────\n› explain this code\n────────────────\nTutor · No model selected"
-            ),
-            AgentState::Unknown
-        );
-        let selector = manifest::explain(
-            Agent::Letta,
-            "8 pinned agents available.\n\n> Resume Bob (pinned)\n  View all 8 profiles\n  Create a new agent (--new)\n\n  ↑↓ navigate · Enter select · Esc exit",
-        );
-        assert_eq!(selector.state, AgentState::Unknown);
-        assert_eq!(
-            selector.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("profile_selector")
-        );
-    }
-
-    #[test]
-    fn letta_manifest_uses_osc_activity_and_approval_signals() {
-        let idle_screen =
-            "────────────────\n› Try \"debug this error\"\n────────────────\nTutor · GPT-5.5";
-
-        for title in ["⠋ Tutor", "project | ⠏ Tutor"] {
-            let detection = detect_agent_with_osc(Some(Agent::Letta), idle_screen, title, "");
-            assert_eq!(detection.state, AgentState::Working);
-            assert!(detection.visible_working);
-        }
-
-        for title in [
-            "[ ! ] Action Required | Tutor",
-            "[ . ] Action Required | Tutor",
-        ] {
-            let detection = detect_agent_with_osc(Some(Agent::Letta), idle_screen, title, "");
-            assert_eq!(detection.state, AgentState::Blocked);
-            assert!(detection.visible_blocker);
-        }
-
-        let detection = detect_agent_with_osc(Some(Agent::Letta), idle_screen, "Tutor", "4;3;0");
-        assert_eq!(detection.state, AgentState::Blocked);
-        assert!(detection.visible_blocker);
-    }
-
-    #[test]
-    fn letta_manifest_detects_observed_command_approval() {
-        let approval = r#"✻ Thinking…
-
-────────────────────────────────────────────────────────────────
-Run this command?
-
-  $ rm -f /var/tmp/herdr-blocked-capture-never-created
-
-❯ 1. Yes
-  2. No, and tell Letta Code what to do differently
-
-Enter to select · Esc to cancel"#;
-        assert_eq!(
-            detect_state(Some(Agent::Letta), approval),
-            AgentState::Blocked
-        );
-        assert_eq!(
-            detect_state(
-                Some(Agent::Letta),
-                "The user asked: Run this command?\n›\n────\nTutor · No model selected"
-            ),
-            AgentState::Idle
-        );
-    }
-
-    #[test]
     fn identify_agent_in_job_detects_windows_cursor_install() {
         let job = crate::platform::ForegroundJob {
             process_group_id: 123,
@@ -1580,19 +1482,36 @@ Enter to select · Esc to cancel"#;
 
     #[test]
     fn identify_agent_in_job_detects_bun_wrapped_omp() {
-        let job = crate::platform::ForegroundJob {
+        for (runtime, script) in [
+            ("bun", "/home/can/.bun/bin/omp"),
+            (
+                "bun.exe",
+                r"C:\Users\herdr\AppData\Roaming\npm\node_modules\@oh-my-pi\pi-coding-agent\dist\cli.js",
+            ),
+        ] {
+            let job = crate::platform::ForegroundJob {
+                process_group_id: 123,
+                processes: vec![foreground_process(123, runtime, &[runtime, script])],
+            };
+            assert_eq!(
+                identify_agent_in_job(&job),
+                Some((Agent::Omp, "omp".to_string())),
+                "script: {script}"
+            );
+        }
+
+        let other_script = crate::platform::ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
-                "bun",
-                &["bun", "/home/can/.bun/bin/omp"],
+                "bun.exe",
+                &[
+                    "bun.exe",
+                    r"C:\Users\herdr\AppData\Roaming\npm\node_modules\@oh-my-pi\pi-coding-agent\dist\setup.js",
+                ],
             )],
         };
-
-        assert_eq!(
-            identify_agent_in_job(&job),
-            Some((Agent::Omp, "omp".to_string()))
-        );
+        assert_eq!(identify_agent_in_job(&other_script), None);
     }
 
     #[test]

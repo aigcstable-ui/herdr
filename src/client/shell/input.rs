@@ -163,6 +163,9 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            if self.handle_machine_badge_event(&event, &mut outcome) {
+                continue;
+            }
             if let Some(update) = host_theme_update(&event) {
                 push_host_theme_update(&mut outcome.requests, update);
             }
@@ -645,6 +648,7 @@ impl ClientShellState {
     ) {
         use crate::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
+        self.pending_workspace_highlight = None;
         if key.code == KeyCode::Esc
             || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
         {
