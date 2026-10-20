@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -766,12 +766,50 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
     Ok(0)
 }
 
+pub(super) fn send_ok_request_with_timeout(
+    method: Method,
+    timeout: Duration,
+) -> std::io::Result<i32> {
+    let response = send_request_with_timeout(
+        &Request {
+            id: "cli:request".into(),
+            method,
+        },
+        timeout,
+    )?;
+
+    if response.get("error").is_some() {
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
+        return Ok(1);
+    }
+
+    Ok(0)
+}
+
 pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
     let client = target::api_client()?;
-    ensure_server_protocol_compatible(&client, &request.id)?;
+    ensure_server_protocol_compatible(&client, &request.id, None)?;
     client
         .request_value(request)
         .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+}
+
+/// Like [`send_request`], but caps the protocol probe and the request itself
+/// under one budget so a stalled server cannot block the caller.
+pub(super) fn send_request_with_timeout(
+    request: &Request,
+    timeout: Duration,
+) -> std::io::Result<serde_json::Value> {
+    let client = target::api_client()?;
+    let deadline = Instant::now() + timeout;
+    ensure_server_protocol_compatible(&client, &request.id, Some(remaining_until(deadline)))?;
+    client
+        .request_value_with_deadline(request, remaining_until(deadline))
+        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+}
+
+fn remaining_until(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
 }
 
 pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde_json::Value> {
@@ -781,8 +819,12 @@ pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde
         .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
 }
 
-fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
-    let status = target::server_status(client)
+fn ensure_server_protocol_compatible(
+    client: &ApiClient,
+    request_id: &str,
+    timeout: Option<Duration>,
+) -> std::io::Result<()> {
+    let status = target::server_status_with_deadline(client, timeout)
         .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;
     let server_protocol = status
         .protocol

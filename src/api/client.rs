@@ -74,6 +74,24 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
+    /// Reads one response under an absolute deadline. Unlike
+    /// [`Self::request_value_with_timeout`], this also bounds Windows named
+    /// pipes, which ignore socket send/recv timeouts.
+    pub fn request_value_with_deadline(
+        &self,
+        request: &Request,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, ApiClientError> {
+        let mut stream = self.connect()?;
+        write_request(&mut stream, request)?;
+        crate::ipc::set_local_stream_polling(&mut stream, true)?;
+        let mut reader = BufReader::new(DeadlineReader {
+            stream: &mut stream,
+            deadline: Instant::now() + timeout,
+        });
+        read_json_line(&mut reader)
+    }
+
     pub fn status(&self) -> Result<crate::api::RuntimeStatus, ApiClientError> {
         self.read_status(None)
     }
@@ -201,10 +219,7 @@ impl Read for DeadlineReader<'_> {
         }
         loop {
             if Instant::now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "server status probe timed out",
-                ));
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "request timed out"));
             }
             // Windows named pipes have no read timeout; peek-before-read keeps
             // both idle and partial responses subject to the same deadline.
@@ -274,6 +289,38 @@ mod tests {
         let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
         let error = client
             .status_with_timeout(Duration::from_millis(100))
+            .unwrap_err();
+        assert!(
+            matches!(error, ApiClientError::Io(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock))
+        );
+        server.join().unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn request_deadline_closes_a_stalled_request() {
+        use interprocess::local_socket::traits::Listener as _;
+        let path =
+            std::env::temp_dir().join(format!("herdr-request-timeout-{}.sock", std::process::id()));
+        let listener = crate::ipc::bind_private_local_listener(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line).unwrap()["method"],
+                "ping"
+            );
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let request = Request {
+            id: "request-deadline".into(),
+            method: Method::Ping(PingParams::default()),
+        };
+        let error = client
+            .request_value_with_deadline(&request, Duration::from_millis(100))
             .unwrap_err();
         assert!(
             matches!(error, ApiClientError::Io(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock))
