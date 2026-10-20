@@ -9,6 +9,10 @@ use crate::api::schema::{
     SplitDirection,
 };
 
+// Agent reports are best-effort. Hooks spawn this CLI with a short timeout, so
+// a stalled server must fail fast instead of holding the hook open.
+const REPORT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_pane_help();
@@ -1274,17 +1278,20 @@ fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::send_ok_request(Method::PaneReportAgent(PaneReportAgentParams {
-        pane_id,
-        source,
-        agent,
-        state,
-        message,
-        seq,
-        agent_session_id,
-        agent_session_path,
-        resume_argv,
-    }))
+    super::send_ok_request_with_timeout(
+        Method::PaneReportAgent(PaneReportAgentParams {
+            pane_id,
+            source,
+            agent,
+            state,
+            message,
+            seq,
+            agent_session_id,
+            agent_session_path,
+            resume_argv,
+        }),
+        REPORT_REQUEST_TIMEOUT,
+    )
 }
 
 fn split_resume_argv(args: &[String]) -> (&[String], Option<Vec<String>>) {
@@ -1399,8 +1406,8 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
 
-    super::send_ok_request(Method::PaneReportAgentSession(
-        PaneReportAgentSessionParams {
+    super::send_ok_request_with_timeout(
+        Method::PaneReportAgentSession(PaneReportAgentSessionParams {
             pane_id,
             source,
             agent,
@@ -1409,8 +1416,9 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
             agent_session_path,
             session_start_source,
             resume_argv,
-        },
-    ))
+        }),
+        REPORT_REQUEST_TIMEOUT,
+    )
 }
 
 fn pane_release_agent(args: &[String]) -> std::io::Result<i32> {

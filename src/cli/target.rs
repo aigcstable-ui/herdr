@@ -102,12 +102,19 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
 pub(super) fn server_status(
     client: &ApiClient,
 ) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
-    let probe = || {
-        if is_remote() {
-            client.status_with_timeout(std::time::Duration::from_secs(15))
-        } else {
-            client.status()
-        }
+    server_status_with_deadline(client, None)
+}
+
+/// Probes the server under the caller's budget when one is given. Without a
+/// budget, remote probes keep their 15s default and local probes stay unbounded.
+pub(super) fn server_status_with_deadline(
+    client: &ApiClient,
+    timeout: Option<std::time::Duration>,
+) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
+    let probe = || match timeout {
+        Some(timeout) => client.status_with_timeout(timeout),
+        None if is_remote() => client.status_with_timeout(std::time::Duration::from_secs(15)),
+        None => client.status(),
     };
     let error = match probe() {
         Ok(status) => return Ok(status),
