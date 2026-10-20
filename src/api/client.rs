@@ -219,10 +219,7 @@ impl Read for DeadlineReader<'_> {
         }
         loop {
             if Instant::now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "request timed out",
-                ));
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "request timed out"));
             }
             // Windows named pipes have no read timeout; peek-before-read keeps
             // both idle and partial responses subject to the same deadline.
@@ -303,10 +300,8 @@ mod tests {
     #[test]
     fn request_deadline_closes_a_stalled_request() {
         use interprocess::local_socket::traits::Listener as _;
-        let path = std::env::temp_dir().join(format!(
-            "herdr-request-timeout-{}.sock",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("herdr-request-timeout-{}.sock", std::process::id()));
         let listener = crate::ipc::bind_private_local_listener(&path).unwrap();
         let server = std::thread::spawn(move || {
             let stream = listener.accept().unwrap();
