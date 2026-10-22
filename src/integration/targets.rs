@@ -1785,16 +1785,17 @@ pub(crate) fn uninstall_grok() -> io::Result<GrokUninstallResult> {
 /// The exact Herdr-owned Codely hook definition. Installation and status share
 /// this value so any registration drift is reported as outdated. Codely runs
 /// hook commands through a shell with millisecond timeouts, and `name` is how
-/// its `/hooks` UI and herdr identify the entry.
-fn codely_hook_command(hook_path: &Path) -> String {
-    format!("node \"{}\"", hook_path.display())
+/// its `/hooks` UI and herdr identify the entry. The managed event is passed on
+/// argv so the hook can still report when its stdin payload never arrives.
+fn codely_hook_command(hook_path: &Path, event: &str) -> String {
+    format!("node \"{}\" {event}", hook_path.display())
 }
 
-fn codely_hook_definition(hook_path: &Path) -> Value {
+fn codely_hook_definition(hook_path: &Path, event: &str) -> Value {
     json!({
         "type": "command",
         "name": CODELY_SETTINGS_HOOK_NAME,
-        "command": codely_hook_command(hook_path),
+        "command": codely_hook_command(hook_path, event),
         "timeout": CODELY_HOOK_TIMEOUT_MS,
     })
 }
@@ -1876,7 +1877,7 @@ pub(crate) fn install_codely() -> io::Result<CodelyInstallPaths> {
                     io::Error::other(format!("hook entries for {event} must be an array"))
                 })?;
             entries.retain(|entry| !is_owned_codely_entry(entry));
-            entries.push(json!({ "hooks": [codely_hook_definition(&hook_path)] }));
+            entries.push(json!({ "hooks": [codely_hook_definition(&hook_path, event)] }));
         }
     }
     fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;

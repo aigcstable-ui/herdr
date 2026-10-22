@@ -3635,6 +3635,7 @@ fn bundled_integration_asset_versions_match_expected_versions() {
             MASTRACODE_INTEGRATION_VERSION,
         ),
         ("grok", GROK_HOOK_ASSET, GROK_INTEGRATION_VERSION),
+        ("codely", CODELY_HOOK_ASSET, CODELY_INTEGRATION_VERSION),
     ] {
         assert_eq!(
             parse_integration_version(asset),
@@ -5242,9 +5243,19 @@ fn install_codely_writes_hook_and_settings() {
     assert_eq!(hook["name"], json!(CODELY_SETTINGS_HOOK_NAME));
     assert_eq!(
         hook["command"],
-        json!(format!("node \"{}\"", installed.hook_path.display()))
+        json!(format!("node \"{}\" SessionStart", installed.hook_path.display()))
     );
     assert_eq!(hook["timeout"], json!(CODELY_HOOK_TIMEOUT_MS));
+    // Every managed event passes its own name so the hook can report without a
+    // stdin payload.
+    for event in CODELY_MANAGED_EVENTS {
+        let entry = codely_owned_entries(&settings["hooks"], event);
+        assert_eq!(
+            entry[0]["hooks"][0]["command"],
+            json!(format!("node \"{}\" {event}", installed.hook_path.display())),
+            "event {event}"
+        );
+    }
 
     std::env::remove_var(CODELY_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);

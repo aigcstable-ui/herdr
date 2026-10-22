@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,9 +35,16 @@ afterAll(() => {
 
 type Report = { command: string; args: string[] };
 
-function runHook(payload: unknown, env: Record<string, string | undefined> = {}) {
-  reportCounter += 1;
-  const logPath = join(workDir, `reports-${reportCounter}.jsonl`);
+function readReports(logPath: string): Report[] {
+  return existsSync(logPath)
+    ? readFileSync(logPath, "utf8")
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => JSON.parse(line) as Report)
+    : [];
+}
+
+function hookEnvironment(logPath: string, env: Record<string, string | undefined> = {}) {
   const hookEnv: Record<string, string | undefined> = {
     ...process.env,
     HERDR_ENV: "1",
@@ -51,21 +58,46 @@ function runHook(payload: unknown, env: Record<string, string | undefined> = {})
       delete hookEnv[name];
     }
   }
+  return hookEnv;
+}
 
-  const result = spawnSync(process.execPath, ["--preload", preloadPath, hookPath], {
+function runHook(
+  payload: unknown,
+  env: Record<string, string | undefined> = {},
+  registeredEvent?: string,
+) {
+  reportCounter += 1;
+  const logPath = join(workDir, `reports-${reportCounter}.jsonl`);
+  const args = registeredEvent ? [hookPath, registeredEvent] : [hookPath];
+
+  const result = spawnSync(process.execPath, ["--preload", preloadPath, ...args], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
-    env: hookEnv,
+    env: hookEnvironment(logPath, env),
     timeout: 10_000,
   });
 
-  const reports: Report[] = existsSync(logPath)
-    ? readFileSync(logPath, "utf8")
-        .split("\n")
-        .filter((line) => line.trim())
-        .map((line) => JSON.parse(line) as Report)
-    : [];
-  return { result, reports };
+  return { result, reports: readReports(logPath) };
+}
+
+// Runs the hook without ever closing stdin, like a harness or shell wrapper that
+// keeps the payload pipe open after starting the hook.
+function runHookWithOpenStdin(registeredEvent: string) {
+  reportCounter += 1;
+  const logPath = join(workDir, `reports-${reportCounter}.jsonl`);
+  return new Promise<{ code: number | null; durationMs: number; reports: Report[] }>((resolve) => {
+    const started = Date.now();
+    const child = spawn(process.execPath, ["--preload", preloadPath, hookPath, registeredEvent], {
+      env: hookEnvironment(logPath),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    // Safety net: the hook must never outlive its own deadline.
+    const kill = setTimeout(() => child.kill("SIGKILL"), 8_000);
+    child.on("close", (code) => {
+      clearTimeout(kill);
+      resolve({ code, durationMs: Date.now() - started, reports: readReports(logPath) });
+    });
+  });
 }
 
 function argsWithoutSeq(args: string[]): string[] {
@@ -306,4 +338,32 @@ test("a UTF-8 BOM does not break the payload", () => {
 
   expect(reports).toHaveLength(1);
   expect(stateOf(reports[0].args)).toBe("working");
+});
+
+test("the registered event name reports when stdin never closes", async () => {
+  const { code, durationMs, reports } = await runHookWithOpenStdin("BeforeTool");
+
+  expect(code).toBe(0);
+  expect(reports).toHaveLength(1);
+  expect(stateOf(reports[0].args)).toBe("working");
+  // The hook must exit on its own stdin grace period, not on the harness kill.
+  expect(durationMs).toBeLessThan(4_000);
+});
+
+test("the payload event wins over the registered event name", () => {
+  const { reports } = runHook({ hook_event_name: "AfterAgent" }, {}, "BeforeTool");
+
+  expect(reports).toHaveLength(1);
+  expect(stateOf(reports[0].args)).toBe("idle");
+});
+
+test("a registered event outside the managed list reports nothing", () => {
+  expect(runHook({}, {}, "SessionEnd").reports).toEqual([]);
+  expect(runHook({}, {}, "NotAnEvent").reports).toEqual([]);
+});
+
+test("stalled payloads from subagents still report nothing", () => {
+  const { reports } = runHook({ agent_id: "subagent-1" }, {}, "BeforeTool");
+
+  expect(reports).toEqual([]);
 });

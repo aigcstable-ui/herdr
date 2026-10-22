@@ -327,7 +327,12 @@ const GROK_INTEGRATION_VERSION: u32 = 3;
 const CODELY_HOOK_INSTALL_NAME: &str = "herdr-agent-state.js";
 const CODELY_HOOK_ASSET: &str = include_str!("assets/codely/herdr-agent-state.js");
 const CODELY_SETTINGS_HOOK_NAME: &str = "herdr-agent-state";
-const CODELY_HOOK_TIMEOUT_MS: u64 = 10_000;
+// Codely runs managed hooks through a shell before node starts, and BeforeTool
+// fires once per tool call (including parallel tool calls). The hook bounds its
+// own work to STDIN_GRACE_MS + REPORT_BUDGET_MS (3.2s), so this harness ceiling
+// only has to cover a cold shell/node start while keeping a stuck hook from
+// stalling a tool call for the full 10s it used to.
+const CODELY_HOOK_TIMEOUT_MS: u64 = 5_000;
 const CODELY_MANAGED_EVENTS: [&str; 6] = [
     "SessionStart",
     "BeforeAgent",
@@ -336,7 +341,7 @@ const CODELY_MANAGED_EVENTS: [&str; 6] = [
     "PermissionRequest",
     "AfterAgent",
 ];
-const CODELY_INTEGRATION_VERSION: u32 = 1;
+const CODELY_INTEGRATION_VERSION: u32 = 2;
 
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 
